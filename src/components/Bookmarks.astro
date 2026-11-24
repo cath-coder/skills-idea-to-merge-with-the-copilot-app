@@ -1,15 +1,16 @@
 ---
-// Bookmarks component (scaffold).
-//
-// The markup below renders during the static build. The dynamic behavior —
-// adding a bookmark, generating a short slug, and persisting to the browser —
-// must run ONLY in the client-side <script> boundary at the bottom of this
-// file. Astro runs that script in the browser, never during the build, so
-// browser-only APIs are safe there.
-//
-// You will implement the behavior in Step 3.
 ---
-<form id="add-bookmark">
+<form id="add-bookmark" novalidate>
+  <div class="field">
+    <label for="title">Title <span class="optional">(optional)</span></label>
+    <input
+      id="title"
+      name="title"
+      type="text"
+      autocomplete="off"
+      placeholder="A handy page"
+    />
+  </div>
   <div class="field">
     <label for="url">Link to save</label>
     <input
@@ -17,54 +18,256 @@
       name="url"
       type="text"
       inputmode="url"
-      autocomplete="off"
+      autocomplete="url"
       spellcheck="false"
       placeholder="https://example.com"
       required
+      aria-describedby="feedback"
     />
   </div>
   <button type="submit">Add bookmark</button>
 </form>
 
-<p class="hint">Paste a URL and select <strong>Add bookmark</strong> to generate its short <code>mona-</code> slug.</p>
+<p class="hint">Only HTTP and HTTPS links are saved. Your bookmarks stay in this browser.</p>
+<p id="feedback" class="feedback" role="status" aria-live="polite"></p>
 
 <p id="empty-state" class="empty">No bookmarks yet — add your first link above.</p>
 
 <div id="list-header" hidden>
-  <h2 class="list-title">Saved bookmarks</h2>
+  <h2 class="list-title">Saved bookmarks <span id="bookmark-count"></span></h2>
   <button id="clear-all" type="button" class="clear">Clear all</button>
 </div>
 
-<ul id="bookmark-list" aria-label="Saved bookmarks" aria-live="polite">
-  <!-- Bookmarks render here in the browser. -->
-</ul>
+<ul id="bookmark-list" aria-label="Saved bookmarks" aria-live="polite"></ul>
 
 <script>
-  // CLIENT-SIDE BOUNDARY — runs in the browser only.
-  //
-  // TODO (Step 3): implement the bookmarks feature here.
-  //   1. On form submit, call event.preventDefault() FIRST so the page
-  //      never reloads, then read and validate the original URL.
-  //   2. Generate a short slug with a "mona-" prefix (for example, base62
-  //      of a counter or hash → "mona-7fk2").
-  //   3. Save the original URL and its slug, then persist them in the browser.
-  //   4. Render each saved bookmark into #bookmark-list as a row (li.bookmark) with:
-  //        - the original URL as a link (.url) that opens in a new tab,
-  //        - its short slug shown as a badge (.slug), and
-  //        - a "Copy" button (.copy) that copies the slug.
-  //   5. Toggle empty vs. saved state: hide #empty-state and show #list-header
-  //      (the "Saved bookmarks" heading + "Clear all" button) once at least one
-  //      bookmark exists; reverse it when the list is empty.
-  //   6. Wire the #clear-all button to remove every saved bookmark (clear the
-  //      list, clear browser storage) after a quick confirm.
-  //   7. On page load, read the saved bookmarks from storage and render
-  //      them so the list persists across reloads.
-  //
-  // Because this code lives in a client <script>, browser storage APIs are
-  // safe to use here without breaking the static build.
-  const form = document.getElementById('add-bookmark');
-  form?.addEventListener('submit', (event) => {
-    event.preventDefault(); // keep this — stops the page from reloading
-    // Implement in Step 3.
-  });
+  type Bookmark = {
+    title: string;
+    url: string;
+    slug: string;
+  };
+
+  const storageKey = 'mona-bookmarks';
+  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyz';
+  const formElement = document.getElementById('add-bookmark');
+  const urlElement = document.getElementById('url');
+  const titleElement = document.getElementById('title');
+  const listElement = document.getElementById('bookmark-list');
+  const emptyStateElement = document.getElementById('empty-state');
+  const listHeaderElement = document.getElementById('list-header');
+  const clearAllElement = document.getElementById('clear-all');
+  const feedbackElement = document.getElementById('feedback');
+  const bookmarkCountElement = document.getElementById('bookmark-count');
+
+  if (
+    formElement instanceof HTMLFormElement &&
+    urlElement instanceof HTMLInputElement &&
+    titleElement instanceof HTMLInputElement &&
+    listElement instanceof HTMLUListElement &&
+    emptyStateElement instanceof HTMLElement &&
+    listHeaderElement instanceof HTMLElement &&
+    clearAllElement instanceof HTMLButtonElement &&
+    feedbackElement instanceof HTMLElement &&
+    bookmarkCountElement instanceof HTMLElement
+  ) {
+    let bookmarks = readBookmarks();
+
+    function isHttpUrl(value: string): boolean {
+      try {
+        const parsedUrl = new URL(value.trim());
+        return parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    }
+
+    function isBookmark(value: unknown): value is Bookmark {
+      if (typeof value !== 'object' || value === null) {
+        return false;
+      }
+
+      if (!('url' in value) || !('slug' in value)) {
+        return false;
+      }
+
+      return (
+        typeof value.url === 'string' &&
+        typeof value.slug === 'string' &&
+        /^mona-[0-9a-z]{4}$/.test(value.slug) &&
+        (!('title' in value) || typeof value.title === 'string')
+      );
+    }
+
+    function readBookmarks(): Bookmark[] {
+      try {
+        const storedValue = localStorage.getItem(storageKey);
+        if (storedValue === null) {
+          return [];
+        }
+
+        const parsedValue: unknown = JSON.parse(storedValue);
+        if (!Array.isArray(parsedValue)) {
+          return [];
+        }
+
+        const usedSlugs = new Set<string>();
+        const validBookmarks = parsedValue.filter((value: unknown): value is Bookmark => {
+          if (!isBookmark(value) || !isHttpUrl(value.url) || usedSlugs.has(value.slug)) {
+            return false;
+          }
+
+          usedSlugs.add(value.slug);
+          return true;
+        });
+        return validBookmarks.map((bookmark) => ({
+          title: bookmark.title ?? '',
+          url: bookmark.url,
+          slug: bookmark.slug,
+        }));
+      } catch {
+        feedbackElement.textContent = 'Saved bookmarks could not be read from this browser.';
+        return [];
+      }
+    }
+
+    function persistBookmarks(): boolean {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(bookmarks));
+        return true;
+      } catch {
+        feedbackElement.textContent = 'Changes are only saved for this visit because browser storage is unavailable.';
+        return false;
+      }
+    }
+
+    function createSlug(): string {
+      const usedSlugs = new Set(bookmarks.map((bookmark) => bookmark.slug));
+
+      for (let counter = 0; counter < alphabet.length ** 4; counter += 1) {
+        let suffix = counter.toString(36);
+        while (suffix.length < 4) {
+          suffix = `0${suffix}`;
+        }
+
+        const slug = `mona-${suffix}`;
+        if (!usedSlugs.has(slug)) {
+          return slug;
+        }
+      }
+
+      throw new Error('No unused bookmark slugs remain.');
+    }
+
+    function renderBookmarks(): void {
+      listElement.replaceChildren();
+      emptyStateElement.hidden = bookmarks.length > 0;
+      listHeaderElement.hidden = bookmarks.length === 0;
+      bookmarkCountElement.textContent = bookmarks.length > 0 ? `(${bookmarks.length})` : '';
+
+      for (const bookmark of bookmarks) {
+        const item = document.createElement('li');
+        item.className = 'bookmark';
+
+        const details = document.createElement('div');
+        details.className = 'bookmark-details';
+
+        const title = document.createElement('strong');
+        title.className = 'bookmark-title';
+        title.textContent = bookmark.title || bookmark.url;
+
+        const link = document.createElement('a');
+        link.className = 'url';
+        link.href = bookmark.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = bookmark.url;
+
+        const slug = document.createElement('code');
+        slug.className = 'slug';
+        slug.textContent = bookmark.slug;
+
+        const actions = document.createElement('div');
+        actions.className = 'bookmark-actions';
+
+        const copyButton = document.createElement('button');
+        copyButton.type = 'button';
+        copyButton.className = 'copy';
+        copyButton.textContent = 'Copy slug';
+        copyButton.setAttribute('aria-label', `Copy ${bookmark.slug}`);
+        copyButton.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(bookmark.slug);
+            feedbackElement.textContent = `Copied ${bookmark.slug}.`;
+          } catch {
+            feedbackElement.textContent = 'Could not copy the slug. Check clipboard permissions and try again.';
+          }
+        });
+
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'delete';
+        deleteButton.textContent = 'Delete';
+        deleteButton.setAttribute('aria-label', `Delete ${bookmark.title || bookmark.url}`);
+        deleteButton.addEventListener('click', () => {
+          bookmarks = bookmarks.filter((savedBookmark) => savedBookmark.slug !== bookmark.slug);
+          const saved = persistBookmarks();
+          renderBookmarks();
+          feedbackElement.textContent = saved
+            ? 'Bookmark deleted.'
+            : 'Bookmark deleted for this visit, but browser storage is unavailable.';
+        });
+
+        details.append(title, link);
+        actions.append(slug, copyButton, deleteButton);
+        item.append(details, actions);
+        listElement.append(item);
+      }
+    }
+
+    formElement.addEventListener('submit', (event) => {
+      event.preventDefault();
+
+      const originalUrl = urlElement.value;
+      if (!isHttpUrl(originalUrl)) {
+        feedbackElement.textContent = 'Enter a valid HTTP or HTTPS URL.';
+        urlElement.focus();
+        return;
+      }
+
+      try {
+        bookmarks.push({
+          title: titleElement.value.trim(),
+          url: originalUrl,
+          slug: createSlug(),
+        });
+      } catch {
+        feedbackElement.textContent = 'Could not create a unique slug for this bookmark.';
+        return;
+      }
+
+      const saved = persistBookmarks();
+      renderBookmarks();
+      titleElement.value = '';
+      urlElement.value = '';
+      feedbackElement.textContent = saved
+        ? 'Bookmark saved.'
+        : 'Bookmark added for this visit, but browser storage is unavailable.';
+      titleElement.focus();
+    });
+
+    clearAllElement.addEventListener('click', () => {
+      if (bookmarks.length === 0 || !window.confirm('Clear all saved bookmarks?')) {
+        return;
+      }
+
+      bookmarks = [];
+      const saved = persistBookmarks();
+      renderBookmarks();
+      feedbackElement.textContent = saved
+        ? 'All bookmarks cleared.'
+        : 'Bookmarks cleared for this visit, but browser storage is unavailable.';
+    });
+
+    renderBookmarks();
+  }
 </script>
